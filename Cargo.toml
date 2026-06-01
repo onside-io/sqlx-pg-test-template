@@ -1,24 +1,3 @@
-[workspace]
-members = ["runner", "macros"]
-resolver = "2"
-
-[workspace.package]
-authors = ["Viktor Sokolov"]
-description = "Faster version of #[sqlx-test] macro for PostgreSQL"
-edition = "2021"
-homepage = "https://github.com/gzigzigzeo/sqlx-pg-test-template"
-license = "MIT"
-repository = "https://github.com/gzigzigzeo/sqlx-pg-test-template"
-version = "0.1.2"
-
-[workspace.dependencies]
-proc-macro2 = {version = "1", default-features = false}
-quote = "1"
-sqlx = {version = ">= 0.8", features = ["postgres"], default-features = false}
-sqlx-pg-test-template-macros = {version = "0.1.2", path = "./macros"}
-sqlx-pg-test-template-runner = {version = "0.1.2", path = "./runner"}
-syn = "2"
-thiserror = "2"
 
 [package]
 authors.workspace = true
@@ -29,15 +8,37 @@ license.workspace = true
 name = "sqlx-pg-test-template"
 repository.workspace = true
 version.workspace = true
+[workspace]
+members = ["macros", "runner"]
+resolver = "2"
+
+[workspace.package]
+authors = ["Viktor Sokolov", "Ilia Sokolov"]
+description = "Faster version of #[sqlx-test] macro for PostgreSQL"
+edition = "2021"
+homepage = "https://github.com/onside-io/sqlx-pg-test-template"
+license = "MIT"
+repository = "https://github.com/onside-io/sqlx-pg-test-template"
+version = "0.1.2"
+
+[workspace.dependencies]
+futures-util = "0.3.32"
+proc-macro2 = { version = "1", default-features = false }
+quote = "1"
+sqlx = { version = "0.8", features = ["postgres"], default-features = false }
+sqlx-pg-test-template-macros = { version = "0.1.2", path = "./macros" }
+sqlx-pg-test-template-runner = { version = "0.1.2", path = "./runner" }
+syn = "2"
+thiserror = "2"
+
+[lib]
+name = "sqlx_pg_test_template"
+path = "src/lib.rs"
 
 [dependencies]
 sqlx-pg-test-template-macros.workspace = true
 sqlx-pg-test-template-runner.workspace = true
 
 [dev-dependencies]
-sqlx = {version = ">= 0.8", features = ["migrate", "postgres", "runtime-tokio"]}
-tokio = {version = "1", features = ["full"]}
-
-[lib]
-name = "sqlx_pg_test_template"
-path = "src/lib.rs"
+sqlx = { version = "0.8", features = ["migrate", "postgres", "runtime-tokio"] }
+tokio = { version = "1", features = ["full"] }

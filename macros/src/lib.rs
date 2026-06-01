@@ -1,3 +1,9 @@
+//! # sqlx-pg-test-template-macros
+//!
+//! This crate provides the procedural macro `#[test]` which simplifies writing
+//! PostgreSQL integration tests by automatically creating and cleaning up
+//! template-based databases.
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse::Parser, MetaNameValue};
@@ -6,13 +12,35 @@ type AttributeArgs = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
+/// Internal representation of the macro arguments.
 #[derive(Default)]
 struct Args {
+    /// Name of the template database to use.
     template_name: Option<String>,
+    /// Maximum number of connections for the test pool.
     max_connections: Option<u32>,
 }
 
-/// Enables sqlx_db_test capabilities for a test
+/// Procedural macro that enables template-based database tests.
+///
+/// This macro wraps a test function. It sets up a new PostgreSQL database from a template,
+/// provides a connection pool to the test, and ensures the database is dropped afterward.
+///
+/// # Examples
+///
+/// ```rust
+/// use sqlx::{Pool, Postgres};
+///
+/// #[sqlx_pg_test_template::test]
+/// async fn my_test(pool: Pool<Postgres>) {
+///     // ...
+/// }
+///
+/// #[sqlx_pg_test_template::test(template = "custom_template", max_connections = 10)]
+/// async fn complex_test(pool: Pool<Postgres>) {
+///     // ...
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::ItemFn);
@@ -31,7 +59,7 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 }
 
-/// Runs actual expansion of the `#[test]` attribute
+/// Parses the macro arguments and expands the test function.
 fn expand(args: TokenStream, input: syn::ItemFn) -> Result<TokenStream> {
     let parser = AttributeArgs::parse_terminated;
     let args = parser.parse2(args.into())?;
@@ -40,6 +68,7 @@ fn expand(args: TokenStream, input: syn::ItemFn) -> Result<TokenStream> {
     expand_with_args(input, args)
 }
 
+/// Parses the raw attribute arguments into a structured `Args` struct.
 fn parse_args(attr_args: AttributeArgs) -> syn::Result<Args> {
     let mut args = Args::default();
 
@@ -74,6 +103,7 @@ fn parse_args(attr_args: AttributeArgs) -> syn::Result<Args> {
     Ok(args)
 }
 
+/// Generates the final code for the test function, including the runner orchestration.
 fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
     let ret = &input.sig.output;
     let name = &input.sig.ident;
@@ -125,6 +155,7 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
     .into())
 }
 
+/// Helper to parse an expression into a string literal.
 fn parse_lit_str(expr: &syn::Expr) -> syn::Result<String> {
     match expr {
         syn::Expr::Lit(syn::ExprLit {
@@ -135,6 +166,7 @@ fn parse_lit_str(expr: &syn::Expr) -> syn::Result<String> {
     }
 }
 
+/// Helper to parse an expression into an integer literal (as a string).
 fn parse_lit_int(expr: &syn::Expr) -> syn::Result<String> {
     match expr {
         syn::Expr::Lit(syn::ExprLit {
