@@ -1,13 +1,15 @@
+// File: src/lib.rs
+// Purpose: Public API for the sqlx-pg-test-template crate.
+
 //! # sqlx-pg-test-template
 //!
-//! This crate provides a faster version of the `#[sqlx::test]` macro for PostgreSQL.
-//! It creates a new database for every test using `CREATE DATABASE ... WITH TEMPLATE ...`
-//! and drops it when the test completes.
+//! Provides a fast PostgreSQL test runner for `sqlx`.
+//! It uses database templates for rapid isolation between tests.
 //!
 //! ## Overview
 //!
-//! Creating databases from a template is faster than running migrations for every test.
-//! This tool is especially useful for integration tests that require a complex schema.
+//! This crate simplifies integration testing by cloning a template database
+//! for each test. This is faster than running migrations for every test case.
 //!
 //! ## Usage
 //!
@@ -15,22 +17,27 @@
 //! use sqlx_pg_test_template::test;
 //! use sqlx::{Pool, Postgres};
 //!
-//! // Basic usage using the database from DATABASE_URL as a template.
 //! #[sqlx_pg_test_template::test]
 //! async fn test_basic(pool: Pool<Postgres>) {
-//!     // Test logic here
+//!     // ...
 //! }
 //!
 //! // Use a specific template database.
 //! #[sqlx_pg_test_template::test(template = "my_seed_template")]
 //! async fn test_with_template(pool: Pool<Postgres>) {
-//!     // Test logic here
+//!     // ...
 //! }
 //!
 //! // Configure maximum pool connections for a specific test.
 //! #[sqlx_pg_test_template::test(max_connections = 5)]
 //! async fn test_with_custom_pool(pool: Pool<Postgres>) {
-//!     // Test logic here
+//!     // ...
+//! }
+//!
+//! // Configure to keep the database if the test fails (useful for debugging).
+//! #[sqlx_pg_test_template::test(keep_db_on_failure = true)]
+//! async fn test_keep_db_on_failure(pool: Pool<Postgres>) {
+//!     // ...
 //! }
 //! ```
 //!

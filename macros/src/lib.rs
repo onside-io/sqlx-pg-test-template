@@ -1,30 +1,45 @@
+// File: macros/src/lib.rs
+// Purpose: Implements procedural macros for PostgreSQL template-based testing.
+
 //! # sqlx-pg-test-template-macros
 //!
-//! This crate provides the procedural macro `#[test]` which simplifies writing
-//! PostgreSQL integration tests by automatically creating and cleaning up
-//! template-based databases.
+//! Provides the `#[test]` procedural macro attribute.
+//! It automates database creation from a template and handles clean-up after tests.
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse::Parser, MetaNameValue};
+use syn::{MetaNameValue, parse::Parser};
 
+/// Arguments for syn punctuated parsing.
 type AttributeArgs = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
+
+/// Boxed error type for macro expansion.
 type Error = Box<dyn std::error::Error>;
+
+/// Result type for macro expansion.
 type Result<T> = std::result::Result<T, Error>;
 
-/// Internal representation of the macro arguments.
+/// Configuration options for the `#[test]` macro.
 #[derive(Default)]
 struct Args {
-    /// Name of the template database to use.
+    /// Name of the template database to clone.
     template_name: Option<String>,
-    /// Maximum number of connections for the test pool.
+    /// Maximum concurrent connections in the test pool.
     max_connections: Option<u32>,
+    /// If true, the test database is not dropped if the test fails.
+    keep_db_on_failure: Option<bool>,
 }
 
-/// Procedural macro that enables template-based database tests.
+/// Wraps a test function to enable template-based PostgreSQL testing.
 ///
-/// This macro wraps a test function. It sets up a new PostgreSQL database from a template,
-/// provides a connection pool to the test, and ensures the database is dropped afterward.
+/// This macro creates a temporary database from a template before the test runs.
+/// It provides a `sqlx::Pool<Postgres>` to the test function and drops the database
+/// after the test completes (unless `keep_db_on_failure` is set for failed tests).
+///
+/// # Parameters
+///
+/// - `args`: Optional configuration (e.g., `template`, `max_connections`).
+/// - `input`: The test function to be wrapped.
 ///
 /// # Examples
 ///
@@ -35,31 +50,31 @@ struct Args {
 /// async fn my_test(pool: Pool<Postgres>) {
 ///     // ...
 /// }
-///
-/// #[sqlx_pg_test_template::test(template = "custom_template", max_connections = 10)]
-/// async fn complex_test(pool: Pool<Postgres>) {
-///     // ...
-/// }
 /// ```
 #[proc_macro_attribute]
 pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::ItemFn);
-    let args = args;
 
-    match expand(args, input) {
-        Ok(ts) => ts,
-        Err(e) => {
-            if let Some(parse_err) = e.downcast_ref::<syn::Error>() {
-                parse_err.to_compile_error().into()
-            } else {
-                let msg = e.to_string();
-                quote!(::std::compile_error!(#msg)).into()
-            }
+    expand(args, input).unwrap_or_else(|e| {
+        if let Some(parse_err) = e.downcast_ref::<syn::Error>() {
+            parse_err.to_compile_error().into()
+        } else {
+            let msg = e.to_string();
+            quote!(::std::compile_error!(#msg)).into()
         }
-    }
+    })
 }
 
-/// Parses the macro arguments and expands the test function.
+/// Parses macro attributes and generates the test wrapper.
+///
+/// # Arguments
+///
+/// * `args` - The raw `TokenStream` of attribute arguments.
+/// * `input` - The parsed function item.
+///
+/// # Returns
+///
+/// Returns the expanded `TokenStream` or an error.
 fn expand(args: TokenStream, input: syn::ItemFn) -> Result<TokenStream> {
     let parser = AttributeArgs::parse_terminated;
     let args = parser.parse2(args.into())?;
@@ -68,7 +83,15 @@ fn expand(args: TokenStream, input: syn::ItemFn) -> Result<TokenStream> {
     expand_with_args(input, args)
 }
 
-/// Parses the raw attribute arguments into a structured `Args` struct.
+/// Converts parsed metadata into the `Args` configuration struct.
+///
+/// # Arguments
+///
+/// * `attr_args` - Punctuated list of metadata attributes.
+///
+/// # Returns
+///
+/// Returns the populated `Args` struct or a `syn::Result` error.
 fn parse_args(attr_args: AttributeArgs) -> syn::Result<Args> {
     let mut args = Args::default();
 
@@ -91,11 +114,19 @@ fn parse_args(attr_args: AttributeArgs) -> syn::Result<Args> {
                 args.max_connections = Some(mc);
             }
 
+            syn::Meta::NameValue(MetaNameValue { value, .. })
+                if path.is_ident("keep_db_on_failure") =>
+            {
+                let flag = parse_lit_bool(&value)?;
+
+                args.keep_db_on_failure = Some(flag);
+            }
+
             arg => {
                 return Err(syn::Error::new_spanned(
                     arg,
-                    r#"expected `template = "database_name"` and/or `max_connections = 5`"#,
-                ))
+                    r#"expected `template = "database_name"` and/or `max_connections = 5` and/or `keep_db_on_failure = true`"#,
+                ));
             }
         }
     }
@@ -103,7 +134,16 @@ fn parse_args(attr_args: AttributeArgs) -> syn::Result<Args> {
     Ok(args)
 }
 
-/// Generates the final code for the test function, including the runner orchestration.
+/// Generates the code that executes the test within the runner.
+///
+/// # Arguments
+///
+/// * `input` - The original test function.
+/// * `args` - Parsed configuration arguments.
+///
+/// # Returns
+///
+/// Returns a `TokenStream` containing the generated code.
 fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
     let ret = &input.sig.output;
     let name = &input.sig.ident;
@@ -121,6 +161,11 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
         Some(mc) => quote! { Some(#mc) },
     };
 
+    let keep_db_on_failure = match args.keep_db_on_failure {
+        None => quote! { false },
+        Some(flag) => quote! { #flag },
+    };
+
     let name_str = name.to_string();
 
     Ok(quote! {
@@ -135,6 +180,7 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
                 template_name: #template_name,
                 max_connections: #max_connections,
                 module_path: format!("{}::{}", module_path!().to_string(), #name_str),
+                keep_db_on_failure: #keep_db_on_failure,
             };
 
             sqlx_pg_test_template::run_test(#name, test_args)
@@ -155,7 +201,15 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
     .into())
 }
 
-/// Helper to parse an expression into a string literal.
+/// Extracts a string value from a literal expression.
+///
+/// # Arguments
+///
+/// * `expr` - The expression to parse.
+///
+/// # Returns
+///
+/// Returns the string value or an error if the expression is not a string literal.
 fn parse_lit_str(expr: &syn::Expr) -> syn::Result<String> {
     match expr {
         syn::Expr::Lit(syn::ExprLit {
@@ -166,7 +220,15 @@ fn parse_lit_str(expr: &syn::Expr) -> syn::Result<String> {
     }
 }
 
-/// Helper to parse an expression into an integer literal (as a string).
+/// Extracts an integer value (as a string) from a literal expression.
+///
+/// # Arguments
+///
+/// * `expr` - The expression to parse.
+///
+/// # Returns
+///
+/// Returns the base-10 string representation of the integer or an error.
 fn parse_lit_int(expr: &syn::Expr) -> syn::Result<String> {
     match expr {
         syn::Expr::Lit(syn::ExprLit {
@@ -174,5 +236,24 @@ fn parse_lit_int(expr: &syn::Expr) -> syn::Result<String> {
             ..
         }) => Ok(lit.base10_digits().to_owned()),
         _ => Err(syn::Error::new_spanned(expr, "expected integer")),
+    }
+}
+
+/// Extracts a boolean value from a literal expression.
+///
+/// # Arguments
+///
+/// * `expr` - The expression to parse.
+///
+/// # Returns
+///
+/// Returns the boolean value or an error if the expression is not a boolean literal.
+fn parse_lit_bool(expr: &syn::Expr) -> syn::Result<bool> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Bool(lit),
+            ..
+        }) => Ok(lit.value()),
+        _ => Err(syn::Error::new_spanned(expr, "expected bool")),
     }
 }

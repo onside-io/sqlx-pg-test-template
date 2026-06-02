@@ -14,4 +14,4 @@ proc-macro = true
 [dependencies]
 proc-macro2 = { workspace = true, default-features = false }
 quote.workspace = true
-syn = { workspace = true, features = ["full"] }
+syn = { workspace = true }
