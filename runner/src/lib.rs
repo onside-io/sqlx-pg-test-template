@@ -1,36 +1,62 @@
+// File: runner/src/lib.rs
+// Purpose: Runtime logic for PostgreSQL test database management.
+
+//! # sqlx-pg-test-template-runner
+//!
+//! Provides the runtime logic to create, manage, and delete temporary
+//! PostgreSQL databases for isolation during tests.
+
+use futures_util::FutureExt;
 use std::hash::Hasher;
 use std::str::FromStr;
 
 use sqlx::{
-    postgres::{PgConnectOptions, PgPoolOptions},
     Connection, PgConnection, Pool, Postgres,
+    postgres::{PgConnectOptions, PgPoolOptions},
 };
 
+/// Errors encountered during test database management.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// `DATABASE_URL` is not set or its value is invalid.
     #[error("DATABASE_URL is missing or invalid")]
     InvalidDatabaseUrl,
 
+    /// Database name cannot be determined from connection options.
     #[error("database not found for an open connection pool")]
     DatabaseNotFound,
 
+    /// An error occurred during a `sqlx` operation.
     #[error("sqlx error: '{0}'")]
     Sqlx(#[from] sqlx::Error),
 }
 
-/// Individual test arguments
+/// Configuration for a specific test execution.
 pub struct TestArgs {
-    /// Template database name
+    /// Name of the PostgreSQL database to use as a template.
     pub template_name: Option<String>,
 
-    /// Max connections for this pool (1 by default)
+    /// Maximum concurrent connections in the test connection pool.
     pub max_connections: Option<u32>,
 
-    /// Test module path
+    /// Path of the test module. Used to generate unique database names.
     pub module_path: String,
+
+    /// If true, the database is not dropped if the test fails.
+    pub keep_db_on_failure: bool,
 }
 
-/// Creates a new database from a template
+/// Creates a unique PostgreSQL database by cloning a template database.
+///
+/// # Arguments
+///
+/// * `conn` - Active connection to the PostgreSQL server.
+/// * `template_db_name` - Name of the template database to clone.
+/// * `module_path` - Path of the test, used for unique name generation.
+///
+/// # Returns
+///
+/// Returns a tuple containing the new database name and the connection, or an `Error`.
 pub async fn create_db_from_template(
     mut conn: PgConnection,
     template_db_name: &str,
@@ -40,6 +66,7 @@ pub async fn create_db_from_template(
     hasher.write(module_path.as_bytes());
     let id = hasher.finish();
 
+    // Use a unique name based on the test path to allow parallel test execution.
     let db_name = format!("_sqlx_{}", id);
 
     sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
@@ -53,6 +80,7 @@ pub async fn create_db_from_template(
     .execute(&mut conn)
     .await?;
 
+    // Store the module path in a comment to help identify leaked databases.
     sqlx::query(&format!(
         "COMMENT ON DATABASE {} IS '{}'",
         db_name, module_path
@@ -63,7 +91,17 @@ pub async fn create_db_from_template(
     Ok((db_name, conn))
 }
 
-/// Spawns test pool with a new database
+/// Initializes a connection pool for a specific test database.
+///
+/// # Arguments
+///
+/// * `connect_options` - Connection parameters for the server.
+/// * `db_name` - Name of the database to connect to.
+/// * `max_connections` - Optional limit on the number of pool connections.
+///
+/// # Returns
+///
+/// Returns a configured `Pool<Postgres>` or an `Error`.
 pub async fn spawn_test_pool(
     connect_options: &PgConnectOptions,
     db_name: &str,
@@ -79,7 +117,15 @@ pub async fn spawn_test_pool(
     Ok(pool)
 }
 
-/// Returns the name of the database for the test pool or error
+/// Extracts the database name from connection options.
+///
+/// # Arguments
+///
+/// * `connect_opts` - PostgreSQL connection options.
+///
+/// # Returns
+///
+/// Returns the database name as a `String` or `Error::DatabaseNotFound`.
 pub fn db_name_of_test_pool(connect_opts: &PgConnectOptions) -> Result<String, Error> {
     connect_opts
         .get_database()
@@ -87,11 +133,19 @@ pub fn db_name_of_test_pool(connect_opts: &PgConnectOptions) -> Result<String, E
         .ok_or(Error::DatabaseNotFound)
 }
 
-/// Closes test pool and drops the test database
-pub async fn close_test_pool(
-    conn: &mut PgConnection,
-    pool: &sqlx::Pool<Postgres>,
-) -> Result<(), Error> {
+/// Closes the connection pool and deletes the temporary test database.
+///
+/// This function uses `DROP DATABASE ... WITH (FORCE)` to ensure cleanup.
+///
+/// # Arguments
+///
+/// * `conn` - Active connection to the PostgreSQL server.
+/// * `pool` - The connection pool for the database to be dropped.
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success or an `Error`.
+pub async fn close_test_pool(conn: &mut PgConnection, pool: &Pool<Postgres>) -> Result<(), Error> {
     let db_name = db_name_of_test_pool(&pool.connect_options())?;
 
     pool.close().await;
@@ -103,7 +157,18 @@ pub async fn close_test_pool(
     Ok(())
 }
 
-/// Runs an individual test
+/// Manages the full lifecycle of a database-backed test.
+///
+/// This function handles setup, execution, and cleanup of the test database.
+///
+/// # Arguments
+///
+/// * `f` - The asynchronous test function to execute.
+/// * `args` - Test configuration parameters.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the lifecycle completes successfully.
 pub async fn wrap_run_test<F, Fut>(f: F, args: TestArgs) -> Result<(), Error>
 where
     F: Fn(Pool<Postgres>) -> Fut,
@@ -121,32 +186,48 @@ where
         .map(Ok)
         .unwrap_or_else(|| db_name_of_test_pool(&connect_opts))?;
 
-    // Service connection == default database (postgres, username, etc)
+    // Service connection == default database (postgres, username, etc.)
     let service_connect_opts = connect_opts.clone().database("");
 
     // Create a new database from the template
-    let conn = PgConnection::connect_with(&service_connect_opts)
-        .await
-        .unwrap();
-    let (db_name, conn) = create_db_from_template(conn, template_name, &args.module_path)
-        .await
-        .unwrap();
+    let conn = PgConnection::connect_with(&service_connect_opts).await?;
+    let (db_name, conn) = create_db_from_template(conn, template_name, &args.module_path).await?;
     conn.close().await?;
 
     // Run test
     let pool = spawn_test_pool(&service_connect_opts, &db_name, args.max_connections).await?;
-
-    f(pool.clone()).await;
+    let test_result = std::panic::AssertUnwindSafe(f(pool.clone()))
+        .catch_unwind()
+        .await;
 
     // Close the pool & drop the test database
     let mut conn = PgConnection::connect_with(&service_connect_opts).await?;
-    close_test_pool(&mut conn, &pool).await.unwrap();
-    conn.close().await?;
+    let cleanup_result = if !args.keep_db_on_failure || test_result.is_ok() {
+        close_test_pool(&mut conn, &pool).await
+    } else {
+        pool.close().await;
+        Ok(())
+    };
+    let conn_close_result =  conn.close().await;
+
+    if let Err(err) = test_result {
+        // Don't return the test error as a Result, but instead panic to fail the test.
+        // This ensures that the test failure is properly reported by the test framework.
+        std::panic::resume_unwind(err);
+    }
+
+    cleanup_result?;
+    conn_close_result?;
 
     Ok(())
 }
 
-/// Runs an individual test
+/// Synchronous wrapper that executes a test lifecycle within a runtime block.
+///
+/// # Arguments
+///
+/// * `f` - The asynchronous test function to execute.
+/// * `args` - Test configuration parameters.
 pub fn run_test<F, Fut>(f: F, args: TestArgs)
 where
     F: Fn(Pool<Postgres>) -> Fut,
