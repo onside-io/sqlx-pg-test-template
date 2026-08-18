@@ -36,6 +36,11 @@ struct Args {
 /// It provides a `sqlx::Pool<Postgres>` to the test function and drops the database
 /// after the test completes (unless `keep_db_on_failure` is set for failed tests).
 ///
+/// The test function argument may also be any type implementing
+/// `From<sqlx::Pool<Postgres>>`, letting you inject an application-specific
+/// wrapper around the pool. The runner keeps its own pool for cleanup, so
+/// teardown is unaffected.
+///
 /// # Parameters
 ///
 /// - `args`: Optional configuration (e.g., `template`, `max_connections`).
@@ -43,11 +48,35 @@ struct Args {
 ///
 /// # Examples
 ///
-/// ```rust
+/// Using the raw pool:
+///
+/// ```ignore
 /// use sqlx::{Pool, Postgres};
 ///
 /// #[sqlx_pg_test_template::test]
 /// async fn my_test(pool: Pool<Postgres>) {
+///     // ...
+/// }
+/// ```
+///
+/// Using a wrapper type:
+///
+/// ```ignore
+/// use sqlx::{Pool, Postgres};
+///
+/// #[derive(Clone)]
+/// struct AppDb {
+///     pool: Pool<Postgres>,
+/// }
+///
+/// impl From<Pool<Postgres>> for AppDb {
+///     fn from(pool: Pool<Postgres>) -> Self {
+///         Self { pool }
+///     }
+/// }
+///
+/// #[sqlx_pg_test_template::test]
+/// async fn my_wrapped_test(db: AppDb) {
 ///     // ...
 /// }
 /// ```
