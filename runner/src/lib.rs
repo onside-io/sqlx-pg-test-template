@@ -203,7 +203,14 @@ where
 
     // Run test
     let pool = spawn_test_pool(&service_connect_opts, &db_name, args.max_connections).await?;
-    let test_result = std::panic::AssertUnwindSafe(f(pool.clone().into()))
+
+    // Build the caught future first and perform the `P: From<Pool<Postgres>>`
+    // conversion (and the call to `f`) inside it. Both are user-supplied code that
+    // may panic; doing them lazily inside `catch_unwind` ensures such a panic is
+    // captured here so the cleanup below still runs and the temporary database is
+    // not leaked.
+    let test_pool = pool.clone();
+    let test_result = std::panic::AssertUnwindSafe(async move { f(test_pool.into()).await })
         .catch_unwind()
         .await;
 
