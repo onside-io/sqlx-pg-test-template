@@ -161,6 +161,12 @@ pub async fn close_test_pool(conn: &mut PgConnection, pool: &Pool<Postgres>) -> 
 ///
 /// This function handles setup, execution, and cleanup of the test database.
 ///
+/// The test function may accept either a `Pool<Postgres>` or any type `P` that
+/// implements `From<Pool<Postgres>>`. This allows client code to use a newtype
+/// wrapper around the pool (for example an application-specific `Db` handle)
+/// without giving up the managed database lifecycle. The runner retains its own
+/// `Pool<Postgres>` for cleanup, so wrapping never interferes with teardown.
+///
 /// # Arguments
 ///
 /// * `f` - The asynchronous test function to execute.
@@ -169,9 +175,10 @@ pub async fn close_test_pool(conn: &mut PgConnection, pool: &Pool<Postgres>) -> 
 /// # Returns
 ///
 /// Returns `Ok(())` if the lifecycle completes successfully.
-pub async fn wrap_run_test<F, Fut>(f: F, args: TestArgs) -> Result<(), Error>
+pub async fn wrap_run_test<F, Fut, P>(f: F, args: TestArgs) -> Result<(), Error>
 where
-    F: Fn(Pool<Postgres>) -> Fut,
+    P: From<Pool<Postgres>>,
+    F: Fn(P) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
     // Get connection string
@@ -196,7 +203,14 @@ where
 
     // Run test
     let pool = spawn_test_pool(&service_connect_opts, &db_name, args.max_connections).await?;
-    let test_result = std::panic::AssertUnwindSafe(f(pool.clone()))
+
+    // Build the caught future first and perform the `P: From<Pool<Postgres>>`
+    // conversion (and the call to `f`) inside it. Both are user-supplied code that
+    // may panic; doing them lazily inside `catch_unwind` ensures such a panic is
+    // captured here so the cleanup below still runs and the temporary database is
+    // not leaked.
+    let test_pool = pool.clone();
+    let test_result = std::panic::AssertUnwindSafe(async move { f(test_pool.into()).await })
         .catch_unwind()
         .await;
 
@@ -224,13 +238,17 @@ where
 
 /// Synchronous wrapper that executes a test lifecycle within a runtime block.
 ///
+/// The test function may accept either a `Pool<Postgres>` or any type `P` that
+/// implements `From<Pool<Postgres>>`.
+///
 /// # Arguments
 ///
 /// * `f` - The asynchronous test function to execute.
 /// * `args` - Test configuration parameters.
-pub fn run_test<F, Fut>(f: F, args: TestArgs)
+pub fn run_test<F, Fut, P>(f: F, args: TestArgs)
 where
-    F: Fn(Pool<Postgres>) -> Fut,
+    P: From<Pool<Postgres>>,
+    F: Fn(P) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
     sqlx::test_block_on(async move {

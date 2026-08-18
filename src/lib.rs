@@ -41,6 +41,43 @@
 //! }
 //! ```
 //!
+//! ## Custom pool wrapper types
+//!
+//! The test function is not restricted to `Pool<Postgres>`. Any type that
+//! implements `From<Pool<Postgres>>` can be injected instead, which is handy
+//! when your application passes around a newtype or a struct holding the pool:
+//!
+//! ```rust
+//! use sqlx::{Pool, Postgres};
+//!
+//! // Application-specific handle around the connection pool.
+//! #[derive(Clone)]
+//! struct AppDb {
+//!     pool: Pool<Postgres>,
+//! }
+//!
+//! impl From<Pool<Postgres>> for AppDb {
+//!     fn from(pool: Pool<Postgres>) -> Self {
+//!         Self { pool }
+//!     }
+//! }
+//!
+//! // Takes the raw pool.
+//! #[sqlx_pg_test_template::test]
+//! async fn test_with_raw_pool(pool: Pool<Postgres>) {
+//!     // ...
+//! }
+//!
+//! // Takes the wrapper type; conversion happens automatically.
+//! #[sqlx_pg_test_template::test]
+//! async fn test_with_wrapper(db: AppDb) {
+//!     // ...
+//! }
+//! ```
+//!
+//! The runner keeps its own `Pool<Postgres>` internally, so database cleanup
+//! works identically for both forms.
+//!
 //! ## Running Tests
 //!
 //! Set the `DATABASE_URL` to point to your template database:

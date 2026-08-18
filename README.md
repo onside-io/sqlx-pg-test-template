@@ -53,7 +53,43 @@ async fn test_with_debug(pool: Pool<Postgres>) {
 }
 ```
 
-### 2. Run Tests
+### 2. Use a Custom Pool Wrapper (optional)
+
+The injected argument is not limited to `Pool<Postgres>`. Any type implementing
+`From<Pool<Postgres>>` works, which is convenient when your application passes a
+newtype or a struct holding the pool.
+
+```rust
+use sqlx::{Pool, Postgres};
+
+#[derive(Clone)]
+struct AppDb {
+    pool: Pool<Postgres>,
+}
+
+impl From<Pool<Postgres>> for AppDb {
+    fn from(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+// Raw pool
+#[sqlx_pg_test_template::test]
+async fn test_with_raw_pool(pool: Pool<Postgres>) {
+    // ...
+}
+
+// Wrapper type; conversion is automatic
+#[sqlx_pg_test_template::test]
+async fn test_with_wrapper(db: AppDb) {
+    // ...
+}
+```
+
+The runner keeps its own `Pool<Postgres>` internally, so cleanup behaves
+identically for both forms.
+
+### 3. Run Tests
 
 Set `DATABASE_URL` to point to the template database and run `cargo test`.
 
