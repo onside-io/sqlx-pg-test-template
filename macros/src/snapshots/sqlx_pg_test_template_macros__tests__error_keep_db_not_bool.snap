@@ -1,0 +1,6 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(keep_db_on_failure = 1), sample_fn())"
+---
+// #[sqlx_pg_test_template::test(keep_db_on_failure = 1)]
+::core::compile_error!("expected bool")

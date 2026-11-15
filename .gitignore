@@ -22,3 +22,7 @@ localfs/*
 
 .build/
 Cargo.lock
+
+# insta pending snapshots
+*.snap.new
+*.pending-snap

@@ -26,6 +26,24 @@ pub enum Error {
     #[error("database not found for an open connection pool")]
     DatabaseNotFound,
 
+    /// PostgreSQL refused to clone the template because other sessions are connected to it.
+    ///
+    /// The runner's own maintenance connections use the role's default database, so the
+    /// template named in `DATABASE_URL` must be a different database that nothing connects to.
+    #[error(
+        "cannot clone template database `{template}`: {source}. PostgreSQL refuses to copy a \
+         template while other sessions are connected to it; point DATABASE_URL at a dedicated \
+         template database that nothing connects to (the runner's own maintenance connections \
+         use the role's default database)"
+    )]
+    TemplateInUse {
+        /// Name of the template database that could not be cloned.
+        template: String,
+        /// The underlying database error.
+        #[source]
+        source: sqlx::Error,
+    },
+
     /// An error occurred during a `sqlx` operation.
     #[error("sqlx error: '{0}'")]
     Sqlx(#[from] sqlx::Error),
@@ -78,7 +96,8 @@ pub async fn create_db_from_template(
         db_name, template_db_name
     ))
     .execute(&mut conn)
-    .await?;
+    .await
+    .map_err(|err| template_error(err, template_db_name))?;
 
     // Store the module path in a comment to help identify leaked databases.
     sqlx::query(&format!(
@@ -89,6 +108,31 @@ pub async fn create_db_from_template(
     .await?;
 
     Ok((db_name, conn))
+}
+
+/// SQLSTATE reported by PostgreSQL when a template database has other active sessions.
+const OBJECT_IN_USE: &str = "55006";
+
+/// Converts a failed `CREATE DATABASE ... WITH TEMPLATE` into the most descriptive error.
+///
+/// # Arguments
+///
+/// * `err` - The error returned by the `CREATE DATABASE` statement.
+/// * `template` - Name of the template database that was being cloned.
+fn template_error(err: sqlx::Error, template: &str) -> Error {
+    let template_in_use = matches!(
+        &err,
+        sqlx::Error::Database(db_err) if db_err.code().as_deref() == Some(OBJECT_IN_USE)
+    );
+
+    if template_in_use {
+        Error::TemplateInUse {
+            template: template.to_owned(),
+            source: err,
+        }
+    } else {
+        Error::Sqlx(err)
+    }
 }
 
 /// Initializes a connection pool for a specific test database.
@@ -222,7 +266,7 @@ where
         pool.close().await;
         Ok(())
     };
-    let conn_close_result =  conn.close().await;
+    let conn_close_result = conn.close().await;
 
     if let Err(err) = test_result {
         // Don't return the test error as a Result, but instead panic to fail the test.

@@ -94,6 +94,9 @@
 //! - The PostgreSQL user must have `CREATEDB` permissions.
 //! - A default database (e.g., `postgres`) must be accessible to the user.
 //! - The template database must exist and be up-to-date.
+//! - No other session may be connected to the template database while tests run, because
+//!   PostgreSQL refuses to clone a database that is in use. The runner's maintenance connections
+//!   use the role's default database (usually `postgres`), so the template must be a different database.
 //!
 //! ## Differences from `#[sqlx::test]`
 //!

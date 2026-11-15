@@ -1,0 +1,18 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(template = \"my_template\", max_connections = 3,\nkeep_db_on_failure = true), sample_fn())"
+---
+// #[sqlx_pg_test_template::test(template = "my_template" , max_connections = 3 , keep_db_on_failure = true)]
+#[::core::prelude::v1::test]
+fn my_test() {
+    async fn my_test(pool: Pool<Postgres>) {
+        {}
+    }
+    let test_args = ::sqlx_pg_test_template::TestArgs {
+        template_name: Some("my_template".to_string()),
+        max_connections: Some(3u32),
+        module_path: format!("{}::{}", module_path!().to_string(), "my_test"),
+        keep_db_on_failure: true,
+    };
+    sqlx_pg_test_template::run_test(my_test, test_args)
+}

@@ -1,0 +1,6 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(5), sample_fn())"
+---
+// #[sqlx_pg_test_template::test(5)]
+::core::compile_error!("expected identifier")

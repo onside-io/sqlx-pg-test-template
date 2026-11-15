@@ -12,6 +12,16 @@ version.workspace = true
 proc-macro = true
 
 [dependencies]
-proc-macro2 = { workspace = true, default-features = false }
+# `proc-macro` provides the `proc_macro::TokenStream` <-> `proc_macro2::TokenStream` conversions
+# used by the attribute entry point.
+proc-macro2 = { workspace = true, features = ["proc-macro"] }
 quote.workspace = true
-syn = { workspace = true }
+# Listed explicitly so the crate builds on its own (`cargo test -p sqlx-pg-test-template-macros`)
+# instead of relying on feature unification with other workspace members.
+syn = { workspace = true, features = ["clone-impls", "full", "parsing", "printing"] }
+
+[dev-dependencies]
+insta = "1"
+# 0.2 is the last line built on `syn` 2; `verbatim` pretty-prints macro arguments
+# such as `format!(..)` and `compile_error!(..)` instead of dumping raw tokens.
+prettyplease = { version = "0.2", features = ["verbatim"] }

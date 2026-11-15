@@ -1,0 +1,18 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(), quote!\n{ async fn my_test(pool: Pool<Postgres>) -> () { () } })"
+---
+// #[sqlx_pg_test_template::test()]
+#[::core::prelude::v1::test]
+fn my_test() -> () {
+    async fn my_test(pool: Pool<Postgres>) -> () {
+        { () }
+    }
+    let test_args = ::sqlx_pg_test_template::TestArgs {
+        template_name: None,
+        max_connections: None,
+        module_path: format!("{}::{}", module_path!().to_string(), "my_test"),
+        keep_db_on_failure: false,
+    };
+    sqlx_pg_test_template::run_test(my_test, test_args)
+}

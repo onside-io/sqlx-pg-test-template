@@ -1,0 +1,8 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(foo = \"x\"), sample_fn())"
+---
+// #[sqlx_pg_test_template::test(foo = "x")]
+::core::compile_error!(
+    "expected `template = \"database_name\"` and/or `max_connections = 5` and/or `keep_db_on_failure = true`",
+)

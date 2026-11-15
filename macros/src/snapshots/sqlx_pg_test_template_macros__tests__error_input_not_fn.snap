@@ -1,0 +1,6 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(template = 5), quote!(struct Foo;))"
+---
+// #[sqlx_pg_test_template::test(template = 5)]
+::core::compile_error!("expected `fn`")

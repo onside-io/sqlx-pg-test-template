@@ -6,18 +6,12 @@
 //! Provides the `#[test]` procedural macro attribute.
 //! It automates database creation from a template and handles clean-up after tests.
 
-use proc_macro::TokenStream;
+use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{MetaNameValue, parse::Parser};
 
 /// Arguments for syn punctuated parsing.
 type AttributeArgs = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
-
-/// Boxed error type for macro expansion.
-type Error = Box<dyn std::error::Error>;
-
-/// Result type for macro expansion.
-type Result<T> = std::result::Result<T, Error>;
 
 /// Configuration options for the `#[test]` macro.
 #[derive(Default)]
@@ -81,35 +75,50 @@ struct Args {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as syn::ItemFn);
-
-    expand(args, input).unwrap_or_else(|e| {
-        if let Some(parse_err) = e.downcast_ref::<syn::Error>() {
-            parse_err.to_compile_error().into()
-        } else {
-            let msg = e.to_string();
-            quote!(::std::compile_error!(#msg)).into()
-        }
-    })
+pub fn test(
+    args: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    expand(args.into(), input.into()).into()
 }
 
-/// Parses macro attributes and generates the test wrapper.
+/// Expands the attribute on `proc_macro2` token streams.
+///
+/// This is the entry point shared by [`test`] and the unit tests: unlike `proc_macro`,
+/// `proc_macro2` tokens can be built outside of a macro invocation. Every error is rendered
+/// as a `compile_error!` invocation, so the output is always a valid item.
 ///
 /// # Arguments
 ///
-/// * `args` - The raw `TokenStream` of attribute arguments.
-/// * `input` - The parsed function item.
+/// * `args` - The raw attribute arguments.
+/// * `input` - The annotated item.
 ///
 /// # Returns
 ///
-/// Returns the expanded `TokenStream` or an error.
-fn expand(args: TokenStream, input: syn::ItemFn) -> Result<TokenStream> {
-    let parser = AttributeArgs::parse_terminated;
-    let args = parser.parse2(args.into())?;
+/// Returns the generated test function, or a `compile_error!` describing the rejected input.
+fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
+    try_expand(args, input).unwrap_or_else(syn::Error::into_compile_error)
+}
+
+/// Parses the annotated function and the attribute arguments, then generates the test wrapper.
+///
+/// The function item is parsed before the arguments, so an item that is not a function is
+/// reported even when the arguments are malformed as well.
+///
+/// # Arguments
+///
+/// * `args` - The raw attribute arguments.
+/// * `input` - The annotated item, expected to be a function.
+///
+/// # Returns
+///
+/// Returns the expanded `TokenStream` or a parse error.
+fn try_expand(args: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
+    let input: syn::ItemFn = syn::parse2(input)?;
+    let args = AttributeArgs::parse_terminated.parse2(args)?;
     let args = parse_args(args)?;
 
-    expand_with_args(input, args)
+    Ok(expand_with_args(input, args))
 }
 
 /// Converts parsed metadata into the `Args` configuration struct.
@@ -173,7 +182,7 @@ fn parse_args(attr_args: AttributeArgs) -> syn::Result<Args> {
 /// # Returns
 ///
 /// Returns a `TokenStream` containing the generated code.
-fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
+fn expand_with_args(input: syn::ItemFn, args: Args) -> TokenStream {
     let ret = &input.sig.output;
     let name = &input.sig.ident;
     let inputs = &input.sig.inputs;
@@ -197,7 +206,7 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
 
     let name_str = name.to_string();
 
-    Ok(quote! {
+    quote! {
         #(#attrs)*
         #[::core::prelude::v1::test]
         fn #name() #ret {
@@ -227,7 +236,6 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
 
         }
     }
-    .into())
 }
 
 /// Extracts a string value from a literal expression.
@@ -286,3 +294,6 @@ fn parse_lit_bool(expr: &syn::Expr) -> syn::Result<bool> {
         _ => Err(syn::Error::new_spanned(expr, "expected bool")),
     }
 }
+
+#[cfg(test)]
+mod tests;
