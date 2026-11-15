@@ -16,6 +16,7 @@ in large test suites.
 - **Test Isolation**: Each test runs in a dedicated database.
 - **Automatic Cleanup**: Databases are dropped after the test completes by default.
 - **Parallel Execution**: Uses unique database names to prevent collisions.
+- **Fallible Tests**: Test functions may return `Result<(), E>` and use `?`.
 
 ## Usage
 
@@ -51,7 +52,20 @@ async fn test_with_debug(pool: Pool<Postgres>) {
     // ...
     panic!("unexpected assert")
 }
+
+// Return a `Result` to use `?` inside the test. Any `E: std::fmt::Debug` works, e.g.
+// `sqlx::Error`, `Box<dyn std::error::Error>` or `anyhow::Error`. An `Err` fails the test
+// like a panic does and counts as a failure for `keep_db_on_failure`.
+#[sqlx_pg_test_template::test]
+async fn test_with_result(pool: Pool<Postgres>) -> Result<(), sqlx::Error> {
+    let row: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await?;
+    assert_eq!(row.0, 1);
+    Ok(())
+}
 ```
+
+`#[should_panic]` cannot be combined with a `Result` return type; rustc rejects that for every
+`#[test]` function.
 
 ### 2. Use a Custom Pool Wrapper (optional)
 

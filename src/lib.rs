@@ -78,6 +78,31 @@
 //! The runner keeps its own `Pool<Postgres>` internally, so database cleanup
 //! works identically for both forms.
 //!
+//! ## Returning `Result`
+//!
+//! The test function may return `Result<(), E>` for any `E: std::fmt::Debug`, so `?` can be
+//! used in its body. A returned `Err` fails the test exactly like a panic does and counts as a
+//! failure for `keep_db_on_failure`. `#[should_panic]` cannot be combined with a `Result` return
+//! type, because rustc rejects that for every `#[test]` function.
+//!
+//! ```rust
+//! use sqlx::{Pool, Postgres};
+//!
+//! #[sqlx_pg_test_template::test]
+//! async fn test_with_result(pool: Pool<Postgres>) -> Result<(), sqlx::Error> {
+//!     let row: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await?;
+//!     assert_eq!(row.0, 1);
+//!     Ok(())
+//! }
+//!
+//! // Any error type works, including `Box<dyn std::error::Error>` and `anyhow::Error`.
+//! #[sqlx_pg_test_template::test]
+//! async fn test_with_boxed_error(pool: Pool<Postgres>) -> Result<(), Box<dyn std::error::Error>> {
+//!     sqlx::query("SELECT 1").execute(&pool).await?;
+//!     Ok(())
+//! }
+//! ```
+//!
 //! ## Running Tests
 //!
 //! Set the `DATABASE_URL` to point to your template database:
@@ -115,6 +140,9 @@
 //! ```
 
 pub use sqlx_pg_test_template_macros::test;
+
+#[doc(inline)]
+pub use sqlx_pg_test_template_runner::TestTermination;
 
 #[doc(hidden)]
 pub use sqlx_pg_test_template_runner::TestArgs;
