@@ -1,0 +1,22 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(), quote!\n{\n    #[doc = r\" Documentation stays on the generated test.\"]\n    #[should_panic(expected = \"boom\")] async fn my_test(pool: Pool<Postgres>)\n    { panic!(\"boom\"); }\n})"
+---
+// #[sqlx_pg_test_template::test()]
+/// Documentation stays on the generated test.
+#[should_panic(expected = "boom")]
+#[::core::prelude::v1::test]
+fn my_test() {
+    async fn my_test(pool: Pool<Postgres>) {
+        {
+            panic!("boom");
+        }
+    }
+    let test_args = ::sqlx_pg_test_template::TestArgs {
+        template_name: None,
+        max_connections: None,
+        module_path: format!("{}::{}", module_path!().to_string(), "my_test"),
+        keep_db_on_failure: false,
+    };
+    sqlx_pg_test_template::run_test(my_test, test_args)
+}

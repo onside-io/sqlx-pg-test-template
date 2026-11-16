@@ -1,0 +1,6 @@
+---
+source: macros/src/tests.rs
+expression: "expand_pretty(quote!(max_connections = \"5\"), sample_fn())"
+---
+// #[sqlx_pg_test_template::test(max_connections = "5")]
+::core::compile_error!("expected integer")
