@@ -60,8 +60,34 @@ pub struct TestArgs {
     /// Path of the test module. Used to generate unique database names.
     pub module_path: String,
 
-    /// If true, the database is not dropped if the test fails.
+    /// If true, the database is not dropped if the test fails (panics or returns `Err`).
     pub keep_db_on_failure: bool,
+}
+
+/// Return types a test function may have.
+///
+/// A test that ran to completion (did not panic) succeeded if its return value says so. The
+/// runner uses this to decide whether a failed test keeps its database (`keep_db_on_failure`).
+///
+/// Implemented for `()` (always a success) and `Result<T, E>` (a success if `Ok`), so a test can
+/// be written as `async fn t(pool: Pool<Postgres>) -> Result<(), E>` and use `?` in its body. The
+/// test framework additionally requires the return type of the generated `#[test]` function to
+/// implement [`std::process::Termination`], which for `Result<(), E>` means `E: Debug`.
+pub trait TestTermination {
+    /// Returns `true` if the value represents a successful test.
+    fn is_success(&self) -> bool;
+}
+
+impl TestTermination for () {
+    fn is_success(&self) -> bool {
+        true
+    }
+}
+
+impl<T, E> TestTermination for Result<T, E> {
+    fn is_success(&self) -> bool {
+        self.is_ok()
+    }
 }
 
 /// Creates a unique PostgreSQL database by cloning a template database.
@@ -201,6 +227,42 @@ pub async fn close_test_pool(conn: &mut PgConnection, pool: &Pool<Postgres>) -> 
     Ok(())
 }
 
+/// Closes the pool and, if `drop_db` is set, drops the test database.
+///
+/// Every step runs even when an earlier one fails, so that neither the pool nor the
+/// maintenance connection is leaked; the first error is returned.
+///
+/// # Arguments
+///
+/// * `service_connect_opts` - Connection options for the role's default database.
+/// * `pool` - The connection pool of the test database.
+/// * `drop_db` - Whether to drop the test database after closing the pool.
+async fn cleanup_test_db(
+    service_connect_opts: &PgConnectOptions,
+    pool: &Pool<Postgres>,
+    drop_db: bool,
+) -> Result<(), Error> {
+    let mut conn = match PgConnection::connect_with(service_connect_opts).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            pool.close().await;
+            return Err(err.into());
+        }
+    };
+    let drop_result = if drop_db {
+        close_test_pool(&mut conn, pool).await
+    } else {
+        pool.close().await;
+        Ok(())
+    };
+    let conn_close_result = conn.close().await;
+
+    drop_result?;
+    conn_close_result?;
+
+    Ok(())
+}
+
 /// Manages the full lifecycle of a database-backed test.
 ///
 /// This function handles setup, execution, and cleanup of the test database.
@@ -211,6 +273,9 @@ pub async fn close_test_pool(conn: &mut PgConnection, pool: &Pool<Postgres>) -> 
 /// without giving up the managed database lifecycle. The runner retains its own
 /// `Pool<Postgres>` for cleanup, so wrapping never interferes with teardown.
 ///
+/// The test function may return `()` or a `Result` (see [`TestTermination`]). A panic and a
+/// returned `Err` both count as a failed test, which matters for `keep_db_on_failure`.
+///
 /// # Arguments
 ///
 /// * `f` - The asynchronous test function to execute.
@@ -218,12 +283,15 @@ pub async fn close_test_pool(conn: &mut PgConnection, pool: &Pool<Postgres>) -> 
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if the lifecycle completes successfully.
-pub async fn wrap_run_test<F, Fut, P>(f: F, args: TestArgs) -> Result<(), Error>
+/// Returns `Ok` with the test's own return value once the test ran, whether it succeeded or
+/// not, and `Err` if the runner failed to set up the database or to clean up after a
+/// successful test.
+pub async fn wrap_run_test<F, Fut, P>(f: F, args: TestArgs) -> Result<Fut::Output, Error>
 where
     P: From<Pool<Postgres>>,
     F: Fn(P) -> Fut,
-    Fut: std::future::Future<Output = ()>,
+    Fut: std::future::Future,
+    Fut::Output: TestTermination,
 {
     // Get connection string
     let database_url = std::env::var("DATABASE_URL").map_err(|_| Error::InvalidDatabaseUrl)?;
@@ -258,47 +326,62 @@ where
         .catch_unwind()
         .await;
 
-    // Close the pool & drop the test database
-    let mut conn = PgConnection::connect_with(&service_connect_opts).await?;
-    let cleanup_result = if !args.keep_db_on_failure || test_result.is_ok() {
-        close_test_pool(&mut conn, &pool).await
-    } else {
-        pool.close().await;
-        Ok(())
+    // A panic and a returned `Err` both count as a failed test.
+    let test_succeeded = test_result.as_ref().is_ok_and(|output| output.is_success());
+
+    // Close the pool and drop the test database, unless a failed test asked to keep it.
+    let drop_db = test_succeeded || !args.keep_db_on_failure;
+    let cleanup_result = match cleanup_test_db(&service_connect_opts, &pool, drop_db).await {
+        // The test's own failure (panic or `Err`) is what the test framework must report; a
+        // cleanup error must not replace it, so it is only printed (the test framework shows
+        // the captured output of failed tests).
+        Err(err) if !test_succeeded => {
+            eprintln!("sqlx-pg-test-template: failed to clean up test database `{db_name}`: {err}");
+            Ok(())
+        }
+        result => result,
     };
-    let conn_close_result = conn.close().await;
 
-    if let Err(err) = test_result {
-        // Don't return the test error as a Result, but instead panic to fail the test.
+    let output = match test_result {
+        // Don't return the panic as a Result, but re-raise it to fail the test.
         // This ensures that the test failure is properly reported by the test framework.
-        std::panic::resume_unwind(err);
-    }
+        Err(payload) => std::panic::resume_unwind(payload),
+        Ok(output) => output,
+    };
 
+    // A successful test must not leak its database, so a cleanup error fails the test.
     cleanup_result?;
-    conn_close_result?;
 
-    Ok(())
+    Ok(output)
 }
 
 /// Synchronous wrapper that executes a test lifecycle within a runtime block.
 ///
 /// The test function may accept either a `Pool<Postgres>` or any type `P` that
-/// implements `From<Pool<Postgres>>`.
+/// implements `From<Pool<Postgres>>`, and may return `()` or a `Result` (see
+/// [`TestTermination`]). The test's own return value is passed through, so the generated
+/// `#[test]` function can hand it to the test framework.
 ///
 /// # Arguments
 ///
 /// * `f` - The asynchronous test function to execute.
 /// * `args` - Test configuration parameters.
-pub fn run_test<F, Fut, P>(f: F, args: TestArgs)
+///
+/// # Panics
+///
+/// Panics if the runner fails to set up the test database or to clean up after a successful
+/// test, and re-raises a panic of the test itself.
+pub fn run_test<F, Fut, P>(f: F, args: TestArgs) -> Fut::Output
 where
     P: From<Pool<Postgres>>,
     F: Fn(P) -> Fut,
-    Fut: std::future::Future<Output = ()>,
+    Fut: std::future::Future,
+    Fut::Output: TestTermination,
 {
     sqlx::test_block_on(async move {
         match wrap_run_test(f, args).await {
             Err(e) => panic!("test failed: {e}"),
-            Ok(v) => v,
+            Ok(output) => output,
         }
     })
 }

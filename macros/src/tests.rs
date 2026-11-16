@@ -123,6 +123,20 @@ fn explicit_return_type() {
     ));
 }
 
+/// The return type is copied to both the generated test and the inner async fn, so the runner
+/// can pass a `Result` through to the test framework.
+#[test]
+fn result_return_type() {
+    insta::assert_snapshot!(expand_pretty(
+        quote!(),
+        quote! {
+            async fn my_test(pool: Pool<Postgres>) -> Result<(), sqlx::Error> {
+                Ok(())
+            }
+        }
+    ));
+}
+
 #[test]
 fn custom_wrapper_arg() {
     insta::assert_snapshot!(expand_pretty(

@@ -20,7 +20,7 @@ struct Args {
     template_name: Option<String>,
     /// Maximum concurrent connections in the test pool.
     max_connections: Option<u32>,
-    /// If true, the test database is not dropped if the test fails.
+    /// If true, the test database is not dropped if the test fails (panics or returns `Err`).
     keep_db_on_failure: Option<bool>,
 }
 
@@ -34,6 +34,10 @@ struct Args {
 /// `From<sqlx::Pool<Postgres>>`, letting you inject an application-specific
 /// wrapper around the pool. The runner keeps its own pool for cleanup, so
 /// teardown is unaffected.
+///
+/// The test function may return `()` or `Result<(), E>` with `E: std::fmt::Debug`, so `?`
+/// can be used in its body. A returned `Err` fails the test and counts as a failure for
+/// `keep_db_on_failure`. `#[should_panic]` cannot be combined with a `Result` return type.
 ///
 /// # Parameters
 ///
@@ -72,6 +76,19 @@ struct Args {
 /// #[sqlx_pg_test_template::test]
 /// async fn my_wrapped_test(db: AppDb) {
 ///     // ...
+/// }
+/// ```
+///
+/// Returning a `Result` so that `?` can be used:
+///
+/// ```ignore
+/// use sqlx::{Pool, Postgres};
+///
+/// #[sqlx_pg_test_template::test]
+/// async fn my_fallible_test(pool: Pool<Postgres>) -> Result<(), sqlx::Error> {
+///     let row: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await?;
+///     assert_eq!(row.0, 1);
+///     Ok(())
 /// }
 /// ```
 #[proc_macro_attribute]
